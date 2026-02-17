@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpeakerScript</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 40px 20px;
+    }
+
+    .container {
+      background: #fff;
+      border-radius: 20px;
+      box-shadow: 0 25px 70px rgba(0,0,0,0.4);
+      max-width: 860px;
+      width: 100%;
+      padding: 40px;
+    }
+
+    h1 { font-size: 2.2em; color: #1a1a2e; text-align: center; }
+    .subtitle { text-align: center; color: #6b7280; margin-top: 6px; margin-bottom: 28px; font-size: 1em; }
+
+    /* Status bar */
+    .status-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px;
+      border-radius: 10px;
+      margin-bottom: 24px;
+      font-size: 0.9em;
+      font-weight: 500;
+    }
+    .status-bar.loading { background: #fef3c7; color: #92400e; }
+    .status-bar.loaded  { background: #d1fae5; color: #065f46; }
+    .status-bar.error   { background: #fee2e2; color: #991b1b; }
+    .status-bar.not_loaded { background: #f3f4f6; color: #374151; }
+
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.green  { background: #10b981; }
+    .dot.yellow { background: #f59e0b; animation: pulse 1.2s infinite; }
+    .dot.red    { background: #ef4444; }
+    .dot.gray   { background: #9ca3af; }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    /* Upload zone */
+    .upload-zone {
+      border: 2px dashed #d1d5db;
+      border-radius: 14px;
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all .2s;
+      margin-bottom: 20px;
+      background: #f9fafb;
+    }
+    .upload-zone:hover, .upload-zone.drag-over {
+      border-color: #3b82f6;
+      background: #eff6ff;
+    }
+    .upload-zone .icon { font-size: 3em; margin-bottom: 10px; }
+    .upload-zone h3 { color: #374151; margin-bottom: 6px; }
+    .upload-zone p  { color: #9ca3af; font-size: 0.85em; }
+    .upload-zone .file-selected { color: #3b82f6; font-weight: 600; margin-top: 8px; }
+
+    /* Settings row */
+    .settings { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+    .field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 160px; }
+    .field label { font-size: 0.82em; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; }
+    .field select, .field input {
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.95em;
+      color: #1f2937;
+      background: #fff;
+      outline: none;
+    }
+    .field select:focus, .field input:focus { border-color: #3b82f6; }
+
+    /* Button */
+    .btn-primary {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #3b82f6, #6366f1);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      font-size: 1.05em;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .2s;
+      margin-bottom: 24px;
+    }
+    .btn-primary:hover:not(:disabled) { opacity: .88; }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* Progress stages */
+    #progress-section { display: none; margin-bottom: 24px; }
+    .stage-list { display: flex; gap: 0; border-radius: 10px; overflow: hidden; border: 1px solid #e5e7eb; }
+    .stage {
+      flex: 1; padding: 10px 6px;
+      text-align: center;
+      font-size: 0.78em;
+      font-weight: 500;
+      color: #9ca3af;
+      background: #f9fafb;
+      border-right: 1px solid #e5e7eb;
+      transition: all .3s;
+    }
+    .stage:last-child { border-right: none; }
+    .stage.active { background: #eff6ff; color: #3b82f6; }
+    .stage.done   { background: #d1fae5; color: #059669; }
+    .stage-icon   { font-size: 1.2em; display: block; margin-bottom: 3px; }
+    .progress-msg { text-align: center; color: #6b7280; font-size: 0.88em; margin-top: 10px; }
+
+    /* Results */
+    #results-section { display: none; }
+    .results-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px; flex-wrap: wrap; gap: 10px;
+    }
+    .results-header h2 { color: #1a1a2e; font-size: 1.2em; }
+
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+    .tab-btn {
+      padding: 7px 18px; border: 1px solid #d1d5db;
+      border-radius: 8px; background: #fff; font-size: 0.88em;
+      cursor: pointer; color: #6b7280; font-weight: 500;
+    }
+    .tab-btn.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+
+    .export-btns { display: flex; gap: 8px; }
+    .btn-sm {
+      padding: 7px 14px; font-size: 0.85em; border-radius: 8px;
+      border: 1px solid #d1d5db; background: #fff; cursor: pointer;
+      color: #374151; font-weight: 500; transition: background .15s;
+    }
+    .btn-sm:hover { background: #f3f4f6; }
+
+    .transcript-box {
+      border: 1px solid #e5e7eb; border-radius: 12px;
+      padding: 20px; max-height: 520px; overflow-y: auto;
+      background: #fafafa;
+    }
+
+    /* Segment card */
+    .segment {
+      display: flex; gap: 14px;
+      padding: 12px 0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .segment:last-child { border-bottom: none; }
+    .seg-left { min-width: 110px; text-align: right; flex-shrink: 0; }
+    .speaker-badge {
+      display: inline-block; padding: 3px 9px;
+      border-radius: 20px; font-size: 0.75em; font-weight: 700;
+      color: #fff; margin-bottom: 4px;
+    }
+    .seg-time { font-size: 0.72em; color: #9ca3af; }
+    .seg-text { flex: 1; line-height: 1.6; color: #1f2937; font-size: 0.95em; padding-top: 3px; }
+
+    /* Plain text view */
+    #plain-view { display: none; }
+    .plain-box {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.88em; line-height: 1.8; color: #1f2937;
+      border: 1px solid #e5e7eb; border-radius: 12px;
+      padding: 20px; max-height: 520px; overflow-y: auto;
+      background: #fafafa; white-space: pre-wrap;
+    }
+
+    /* Stats row */
+    .stats-row {
+      display: flex; gap: 20px; flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .stat { font-size: 0.85em; color: #6b7280; }
+    .stat span { font-weight: 700; color: #1f2937; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <h1>🎙 SpeakerScript</h1>
+  <p class="subtitle">Video & audio transcription with speaker identification</p>
+
+  <!-- Status bar -->
+  <div class="status-bar not_loaded" id="status-bar">
+    <div class="dot gray" id="status-dot"></div>
+    <span id="status-text">Loading models...</span>
+  </div>
+
+  <!-- Upload zone -->
+  <div class="upload-zone" id="upload-zone">
+    <div class="icon">📁</div>
+    <h3>Drop your video or audio here</h3>
+    <p>MP4, MOV, AVI, MKV, WebM, MP3, WAV, FLAC, M4A</p>
+    <div class="file-selected" id="file-name"></div>
+    <input type="file" id="file-input" accept="video/*,audio/*,.mkv,.flac,.opus,.ogg" style="display:none"/>
+  </div>
+
+  <!-- Settings -->
+  <div class="settings">
+    <div class="field">
+      <label>Language</label>
+      <select id="language">
+        <option value="auto">Auto-detect</option>
+        <option value="en">English</option>
+        <option value="zh">Chinese</option>
+        <option value="es">Spanish</option>
+        <option value="fr">French</option>
+        <option value="de">German</option>
+        <option value="ja">Japanese</option>
+        <option value="ko">Korean</option>
+        <option value="pt">Portuguese</option>
+        <option value="ru">Russian</option>
+        <option value="ar">Arabic</option>
+        <option value="it">Italian</option>
+        <option value="nl">Dutch</option>
+        <option value="hi">Hindi</option>
+        <option value="tr">Turkish</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Min Speakers</label>
+      <input type="number" id="min-speakers" placeholder="auto" min="1" max="20" />
+    </div>
+    <div class="field">
+      <label>Max Speakers</label>
+      <input type="number" id="max-speakers" placeholder="auto" min="1" max="20" />
+    </div>
+  </div>
+
+  <!-- Transcribe button -->
+  <button class="btn-primary" id="transcribe-btn" disabled>Transcribe</button>
+
+  <!-- Progress -->
+  <div id="progress-section">
+    <div class="stage-list">
+      <div class="stage" id="stage-extract">
+        <span class="stage-icon">🎞</span>Extract Audio
+      </div>
+      <div class="stage" id="stage-transcribe">
+        <span class="stage-icon">📝</span>Transcribe
+      </div>
+      <div class="stage" id="stage-align">
+        <span class="stage-icon">🔗</span>Align Words
+      </div>
+      <div class="stage" id="stage-diarize">
+        <span class="stage-icon">👥</span>Identify Speakers
+      </div>
+      <div class="stage" id="stage-merge">
+        <span class="stage-icon">✅</span>Merge
+      </div>
+    </div>
+    <div class="progress-msg" id="progress-msg">Starting...</div>
+  </div>
+
+  <!-- Results -->
+  <div id="results-section">
+    <div class="results-header">
+      <h2>Transcript</h2>
+      <div class="export-btns">
+        <button class="btn-sm" onclick="downloadTxt()">⬇ TXT</button>
+        <button class="btn-sm" onclick="downloadSrt()">⬇ SRT</button>
+      </div>
+    </div>
+
+    <div class="stats-row" id="stats-row"></div>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="showTab('segments')">Speaker View</button>
+      <button class="tab-btn" onclick="showTab('plain')">Plain Text</button>
+    </div>
+
+    <div id="segments-view">
+      <div class="transcript-box" id="transcript-box"></div>
+    </div>
+
+    <div id="plain-view">
+      <div class="plain-box" id="plain-box"></div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+// ─── Config ─────────────────────────────────────────────────────────────────
+const API = '';   // same origin
+
+const SPEAKER_COLORS = [
+  '#3B82F6','#10B981','#F59E0B','#EF4444',
+  '#8B5CF6','#EC4899','#14B8A6','#F97316',
+  '#6366F1','#84CC16',
+];
+
+// ─── State ───────────────────────────────────────────────────────────────────
+let selectedFile = null;
+let currentJobId = null;
+let pollTimer = null;
+let lastResult = null;
+let speakerColorMap = {};
+
+// ─── Status polling ──────────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const res = await fetch(`${API}/api/status`);
+    const data = await res.json();
+    updateStatusBar(data);
+    if (data.status === 'loading') {
+      setTimeout(pollStatus, 2000);
+    }
+  } catch (e) {
+    setTimeout(pollStatus, 3000);
+  }
+}
+
+function updateStatusBar(data) {
+  const bar  = document.getElementById('status-bar');
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  const btn  = document.getElementById('transcribe-btn');
+
+  bar.className = `status-bar ${data.status}`;
+
+  if (data.status === 'loaded') {
+    dot.className = 'dot green';
+    text.textContent = `Ready — ${data.model}`;
+    btn.disabled = !selectedFile;
+  } else if (data.status === 'loading') {
+    dot.className = 'dot yellow';
+    text.textContent = data.progress || 'Loading models...';
+    btn.disabled = true;
+  } else if (data.status === 'error') {
+    dot.className = 'dot red';
+    text.textContent = `Error: ${data.progress}`;
+    btn.disabled = true;
+  } else {
+    dot.className = 'dot gray';
+    text.textContent = 'Models not loaded';
+    btn.disabled = true;
+    // Trigger load
+    fetch(`${API}/api/load`, { method: 'POST' }).then(() => setTimeout(pollStatus, 2000));
+  }
+}
+
+// ─── File selection ──────────────────────────────────────────────────────────
+const zone  = document.getElementById('upload-zone');
+const input = document.getElementById('file-input');
+
+zone.addEventListener('click', () => input.click());
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+});
+input.addEventListener('change', () => { if (input.files[0]) setFile(input.files[0]); });
+
+function setFile(file) {
+  selectedFile = file;
+  document.getElementById('file-name').textContent = `✓ ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)`;
+  const btn = document.getElementById('transcribe-btn');
+  const statusData = document.getElementById('status-text').textContent;
+  // only enable if model is ready
+  if (document.getElementById('status-dot').classList.contains('green')) {
+    btn.disabled = false;
+  }
+}
+
+// ─── Transcribe ──────────────────────────────────────────────────────────────
+document.getElementById('transcribe-btn').addEventListener('click', startTranscription);
+
+async function startTranscription() {
+  if (!selectedFile) return;
+
+  // Reset UI
+  document.getElementById('results-section').style.display = 'none';
+  document.getElementById('progress-section').style.display = 'block';
+  document.getElementById('transcribe-btn').disabled = true;
+  resetStages();
+
+  const formData = new FormData();
+  formData.append('file', selectedFile);
+  formData.append('language', document.getElementById('language').value);
+  formData.append('min_speakers', document.getElementById('min-speakers').value);
+  formData.append('max_speakers', document.getElementById('max-speakers').value);
+
+  try {
+    const res = await fetch(`${API}/api/transcribe`, { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Upload failed');
+    }
+    const data = await res.json();
+    currentJobId = data.job_id;
+    pollJob();
+  } catch (e) {
+    showError(`Upload failed: ${e.message}`);
+  }
+}
+
+// ─── Job polling ─────────────────────────────────────────────────────────────
+function pollJob() {
+  pollTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(`${API}/api/job/${currentJobId}`);
+      const job = await res.json();
+
+      updateProgress(job.progress || '');
+
+      if (job.status === 'done') {
+        showResults(job.result);
+      } else if (job.status === 'error') {
+        showError(job.error || 'Unknown error');
+      } else {
+        pollJob(); // keep polling
+      }
+    } catch (e) {
+      pollJob(); // retry on network error
+    }
+  }, 1500);
+}
+
+// ─── Stage tracking ───────────────────────────────────────────────────────────
+const STAGE_KEYWORDS = {
+  'stage-extract':    ['extract', 'video'],
+  'stage-transcribe': ['transcrib', 'whisper', 'loading audio', 'detected'],
+  'stage-align':      ['align'],
+  'stage-diarize':    ['diariz', 'speaker', 'identif'],
+  'stage-merge':      ['merg', 'complete', 'ready'],
+};
+
+let activeStage = null;
+
+function resetStages() {
+  Object.keys(STAGE_KEYWORDS).forEach(id => {
+    const el = document.getElementById(id);
+    el.className = 'stage';
+  });
+  activeStage = null;
+  document.getElementById('progress-msg').textContent = 'Starting...';
+}
+
+function updateProgress(msg) {
+  document.getElementById('progress-msg').textContent = msg;
+  const lower = msg.toLowerCase();
+
+  let matchedStage = null;
+  for (const [id, keywords] of Object.entries(STAGE_KEYWORDS)) {
+    if (keywords.some(kw => lower.includes(kw))) {
+      matchedStage = id;
+      break;
+    }
+  }
+
+  if (!matchedStage) return;
+
+  const stageIds = Object.keys(STAGE_KEYWORDS);
+  const matchIdx = stageIds.indexOf(matchedStage);
+
+  stageIds.forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (i < matchIdx) el.className = 'stage done';
+    else if (i === matchIdx) el.className = 'stage active';
+    else el.className = 'stage';
+  });
+
+  activeStage = matchedStage;
+}
+
+// ─── Results rendering ───────────────────────────────────────────────────────
+function showResults(result) {
+  // Mark all stages done
+  Object.keys(STAGE_KEYWORDS).forEach(id => {
+    document.getElementById(id).className = 'stage done';
+  });
+  document.getElementById('progress-msg').textContent = 'Complete!';
+
+  lastResult = result;
+  speakerColorMap = {};
+
+  const speakers = [...new Set(result.segments.map(s => s.speaker))];
+  speakers.forEach((spk, i) => {
+    speakerColorMap[spk] = SPEAKER_COLORS[i % SPEAKER_COLORS.length];
+  });
+
+  // Stats
+  const duration = result.segments.length > 0
+    ? result.segments[result.segments.length - 1].end : 0;
+  document.getElementById('stats-row').innerHTML = `
+    <div class="stat">Segments: <span>${result.segments.length}</span></div>
+    <div class="stat">Speakers: <span>${result.num_speakers}</span></div>
+    <div class="stat">Language: <span>${result.language.toUpperCase()}</span></div>
+    <div class="stat">Duration: <span>${formatTime(duration)}</span></div>
+  `;
+
+  // Segment view
+  const box = document.getElementById('transcript-box');
+  box.innerHTML = result.segments.map(seg => `
+    <div class="segment">
+      <div class="seg-left">
+        <div class="speaker-badge" style="background:${speakerColorMap[seg.speaker] || '#6b7280'}">
+          ${formatSpeakerName(seg.speaker)}
+        </div>
+        <div class="seg-time">${formatTime(seg.start)} → ${formatTime(seg.end)}</div>
+      </div>
+      <div class="seg-text">${escHtml(seg.text)}</div>
+    </div>
+  `).join('');
+
+  // Plain text view
+  const plainLines = [];
+  let lastSpk = null;
+  for (const seg of result.segments) {
+    if (seg.speaker !== lastSpk) {
+      if (lastSpk !== null) plainLines.push('');
+      plainLines.push(`[${formatSpeakerName(seg.speaker)}]`);
+      lastSpk = seg.speaker;
+    }
+    plainLines.push(seg.text);
+  }
+  document.getElementById('plain-box').textContent = plainLines.join('\n');
+
+  document.getElementById('results-section').style.display = 'block';
+  document.getElementById('transcribe-btn').disabled = false;
+}
+
+function showError(msg) {
+  document.getElementById('progress-msg').textContent = `❌ Error: ${msg}`;
+  document.getElementById('transcribe-btn').disabled = false;
+}
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+function showTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('segments-view').style.display = tab === 'segments' ? 'block' : 'none';
+  document.getElementById('plain-view').style.display    = tab === 'plain'    ? 'block' : 'none';
+  event.target.classList.add('active');
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+function downloadTxt() {
+  if (!lastResult) return;
+  const lines = [];
+  for (const seg of lastResult.segments) {
+    lines.push(`[${formatSpeakerName(seg.speaker)}] ${formatTime(seg.start)} → ${formatTime(seg.end)}`);
+    lines.push(seg.text);
+    lines.push('');
+  }
+  triggerDownload(lines.join('\n'), 'transcript.txt', 'text/plain');
+}
+
+function downloadSrt() {
+  if (!lastResult) return;
+  const lines = [];
+  lastResult.segments.forEach((seg, i) => {
+    lines.push(String(i + 1));
+    lines.push(`${toSrtTime(seg.start)} --> ${toSrtTime(seg.end)}`);
+    lines.push(`[${formatSpeakerName(seg.speaker)}]: ${seg.text}`);
+    lines.push('');
+  });
+  triggerDownload(lines.join('\n'), 'transcript.srt', 'text/plain');
+}
+
+function triggerDownload(content, filename, mime) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+  a.download = filename;
+  a.click();
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function formatTime(s) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  if (h > 0) return `${pad(h)}:${pad(m)}:${pad(sec)}`;
+  return `${pad(m)}:${pad(sec)}`;
+}
+
+function toSrtTime(s) {
+  const h   = Math.floor(s / 3600);
+  const m   = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  const ms  = Math.round((s % 1) * 1000);
+  return `${pad(h)}:${pad(m)}:${pad(sec)},${String(ms).padStart(3,'0')}`;
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+function formatSpeakerName(raw) {
+  // SPEAKER_00 → Speaker 1, SPEAKER_01 → Speaker 2, etc.
+  const match = raw.match(/(\d+)$/);
+  if (match) return `Speaker ${parseInt(match[1]) + 1}`;
+  return raw;
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+pollStatus();
+</script>
+</body>
+</html>
