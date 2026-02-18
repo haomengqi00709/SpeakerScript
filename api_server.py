@@ -27,9 +27,9 @@ from fastapi.responses import HTMLResponse
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "large-v3")
-PORT = int(os.getenv("PORT", "5002"))
+HF_TOKEN  = os.getenv("HF_TOKEN")
+ASR_MODEL = os.getenv("ASR_MODEL", "Qwen/Qwen3-ASR-0.6B")
+PORT      = int(os.getenv("PORT", "5002"))
 
 # --------------------------------------------------------------------------- #
 # Global state
@@ -55,7 +55,7 @@ def _do_load_models():
     model_load_status = "loading"
     try:
         from transcriber import Transcriber
-        t = Transcriber(model_size=MODEL_SIZE, hf_token=HF_TOKEN)
+        t = Transcriber(asr_model=ASR_MODEL, hf_token=HF_TOKEN)
         t.load(progress_callback=_progress)
         transcriber = t
         model_load_status = "loaded"
@@ -121,7 +121,7 @@ def status():
     return {
         "status": model_load_status,
         "progress": model_load_progress,
-        "model": MODEL_SIZE,
+        "model": ASR_MODEL,
     }
 
 

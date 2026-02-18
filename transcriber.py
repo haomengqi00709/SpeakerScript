@@ -4,10 +4,9 @@ Core transcription + speaker diarization logic.
 
 Pipeline:
   1. Extract audio from video (ffmpeg)
-  2. Transcribe with WhisperX (faster-whisper backend)
-  3. Align word-level timestamps
-  4. Diarize with pyannote (via whisperx.DiarizationPipeline)
-  5. Assign speakers to segments
+  2. Run pyannote diarization → speaker turns with timestamps
+  3. For each speaker turn, transcribe with Qwen3-ASR
+  4. Return combined results with speaker labels
 """
 
 import os
@@ -17,6 +16,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 import torch
 
 logger = logging.getLogger(__name__)
@@ -24,14 +25,19 @@ logger = logging.getLogger(__name__)
 SUPPORTED_VIDEO = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.m4v', '.flv', '.wmv', '.ts'}
 SUPPORTED_AUDIO = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.opus', '.wma'}
 
+ASR_MODEL_ID    = "Qwen/Qwen3-ASR-0.6B"
+DIARIZE_MODEL   = "pyannote/speaker-diarization-3.1"
+MIN_SEGMENT_DUR = 0.3   # skip turns shorter than this (seconds)
 
-def get_whisper_device() -> str:
-    """CTranslate2 supports cuda and cpu only (no MPS)."""
-    return "cuda" if torch.cuda.is_available() else "cpu"
+
+def get_asr_device() -> str:
+    """Qwen3-ASR: CUDA if available, otherwise CPU.
+    MPS is not used here — transformers MPS support for this model is unverified."""
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
-def get_torch_device() -> str:
-    """Full PyTorch device — includes MPS for Apple Silicon."""
+def get_diarize_device() -> str:
+    """Pyannote: supports CUDA, MPS, and CPU."""
     if torch.cuda.is_available():
         return "cuda"
     if torch.backends.mps.is_available():
@@ -39,69 +45,74 @@ def get_torch_device() -> str:
     return "cpu"
 
 
-def get_compute_type(device: str) -> str:
-    return "float16" if device == "cuda" else "int8"
+def extract_audio(input_path: str, sample_rate: int = 16000) -> tuple[np.ndarray, int]:
+    """Convert video or audio to a 16kHz mono float32 numpy array via ffmpeg."""
+    out = tempfile.mktemp(suffix=".wav")
+    cmd = ["ffmpeg", "-y", "-i", input_path, "-ac", "1", "-ar", str(sample_rate), "-vn", out]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg error: {r.stderr[-500:]}")
+    audio, sr = sf.read(out)
+    os.unlink(out)
+    return audio.astype(np.float32), sr
 
 
-def extract_audio(input_path: str, sample_rate: int = 16000) -> str:
-    """Convert video or audio to a 16kHz mono WAV using ffmpeg."""
-    output_path = tempfile.mktemp(suffix=".wav")
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-ac", "1",
-        "-ar", str(sample_rate),
-        "-vn",
-        output_path,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg error: {result.stderr[-500:]}")
-    return output_path
+def slice_audio(audio: np.ndarray, sr: int, start: float, end: float) -> str | None:
+    """Save a time slice of audio to a temp WAV file. Returns path or None if empty."""
+    s = max(0, int(start * sr))
+    e = min(len(audio), int(end * sr))
+    chunk = audio[s:e]
+    if len(chunk) < int(MIN_SEGMENT_DUR * sr):
+        return None
+    path = tempfile.mktemp(suffix=".wav")
+    sf.write(path, chunk, sr)
+    return path
 
 
 class Transcriber:
-    def __init__(self, model_size: str = "large-v3", hf_token: str | None = None):
-        self.model_size = model_size
-        self.hf_token = hf_token
-        self.whisper_device = get_whisper_device()
-        self.torch_device = get_torch_device()
-        self.compute_type = get_compute_type(self.whisper_device)
-        self.whisper_model = None
-        self.diarize_model = None
-        self.loaded = False
+    def __init__(self, asr_model: str = ASR_MODEL_ID, hf_token: str | None = None):
+        self.asr_model_id  = asr_model
+        self.hf_token      = hf_token
+        self.asr_device    = get_asr_device()
+        self.diarize_device = get_diarize_device()
+        self.asr_model     = None
+        self.diarize_pipeline = None
+        self.loaded        = False
 
     def load(self, progress_callback=None):
-        import whisperx
+        from qwen_asr import Qwen3ASRModel
+        from pyannote.audio import Pipeline
 
-        def _progress(msg):
+        def _p(msg):
             logger.info(msg)
             if progress_callback:
                 progress_callback(msg)
 
-        _progress(f"Loading Whisper {self.model_size} on {self.whisper_device} ({self.compute_type})...")
-        self.whisper_model = whisperx.load_model(
-            self.model_size,
-            device=self.whisper_device,
-            compute_type=self.compute_type,
+        _p(f"Loading {self.asr_model_id} on {self.asr_device}...")
+        dtype = torch.bfloat16 if self.asr_device != "cpu" else torch.float32
+        self.asr_model = Qwen3ASRModel.from_pretrained(
+            self.asr_model_id,
+            dtype=dtype,
+            device_map=self.asr_device,
+            max_new_tokens=1024,
         )
 
         if not self.hf_token:
             raise ValueError(
-                "HF_TOKEN is required for speaker diarization.\n"
-                "Accept the license at:\n"
+                "HF_TOKEN required for pyannote. Accept licenses at:\n"
                 "  https://huggingface.co/pyannote/speaker-diarization-3.1\n"
                 "  https://huggingface.co/pyannote/segmentation-3.0"
             )
 
-        _progress(f"Loading pyannote diarization pipeline on {self.torch_device}...")
-        self.diarize_model = whisperx.DiarizationPipeline(
+        _p(f"Loading pyannote diarization pipeline on {self.diarize_device}...")
+        self.diarize_pipeline = Pipeline.from_pretrained(
+            DIARIZE_MODEL,
             use_auth_token=self.hf_token,
-            device=self.torch_device,
         )
+        self.diarize_pipeline = self.diarize_pipeline.to(torch.device(self.diarize_device))
 
         self.loaded = True
-        _progress("All models ready.")
+        _p("All models ready.")
 
     def transcribe(
         self,
@@ -119,93 +130,86 @@ class Transcriber:
                 "num_speakers": int,
             }
         """
-        import whisperx
-
         if not self.loaded:
-            raise RuntimeError("Call load() before transcribe().")
+            raise RuntimeError("Call load() first.")
 
-        def _progress(msg):
+        def _p(msg):
             logger.info(msg)
             if progress_callback:
                 progress_callback(msg)
 
-        # --- 1. Extract audio if needed ---
-        suffix = Path(file_path).suffix.lower()
-        temp_audio = None
-        audio_path = file_path
+        # 1. Extract audio
+        _p("Extracting audio...")
+        audio, sr = extract_audio(file_path)
 
-        if suffix in SUPPORTED_VIDEO or suffix not in SUPPORTED_AUDIO:
-            _progress("Extracting audio from video...")
-            temp_audio = extract_audio(file_path)
-            audio_path = temp_audio
+        # Save full audio to disk — pyannote needs a file path
+        full_audio_path = tempfile.mktemp(suffix=".wav")
+        sf.write(full_audio_path, audio, sr)
 
         try:
-            # --- 2. Load audio ---
-            _progress("Loading audio...")
-            audio = whisperx.load_audio(audio_path)
-
-            # --- 3. Transcribe ---
-            _progress("Transcribing with Whisper...")
-            batch_size = 16 if self.whisper_device == "cuda" else 4
-            result = self.whisper_model.transcribe(
-                audio,
-                language=language,  # None = auto-detect
-                batch_size=batch_size,
-            )
-            detected_language = result.get("language", "unknown")
-            _progress(f"Detected language: {detected_language}")
-
-            # --- 4. Align word timestamps ---
-            _progress(f"Aligning word timestamps...")
-            try:
-                model_a, metadata = whisperx.load_align_model(
-                    language_code=detected_language,
-                    device=self.whisper_device,
-                )
-                result = whisperx.align(
-                    result["segments"],
-                    model_a,
-                    metadata,
-                    audio,
-                    self.whisper_device,
-                    return_char_alignments=False,
-                )
-                del model_a
-                gc.collect()
-            except Exception as e:
-                logger.warning(f"Alignment skipped (language '{detected_language}' may not be supported): {e}")
-
-            # --- 5. Diarize ---
-            _progress("Identifying speakers...")
+            # 2. Diarize
+            _p("Identifying speakers...")
             diarize_kwargs = {}
             if min_speakers is not None:
                 diarize_kwargs["min_speakers"] = min_speakers
             if max_speakers is not None:
                 diarize_kwargs["max_speakers"] = max_speakers
 
-            diarize_segments = self.diarize_model(audio_path, **diarize_kwargs)
+            diarization = self.diarize_pipeline(full_audio_path, **diarize_kwargs)
 
-            # --- 6. Assign speakers ---
-            _progress("Merging transcript with speaker labels...")
-            result = whisperx.assign_word_speakers(diarize_segments, result)
+            # 3. Collect speaker turns
+            turns = [
+                (seg.start, seg.end, spk)
+                for seg, _, spk in diarization.itertracks(yield_label=True)
+                if (seg.end - seg.start) >= MIN_SEGMENT_DUR
+            ]
 
-            # --- 7. Format output ---
+            if not turns:
+                return {"segments": [], "language": "unknown", "num_speakers": 0}
+
+            # 4. Transcribe each turn with Qwen3-ASR
             segments = []
-            for seg in result.get("segments", []):
-                segments.append({
-                    "start": round(seg.get("start", 0), 2),
-                    "end": round(seg.get("end", 0), 2),
-                    "speaker": seg.get("speaker", "UNKNOWN"),
-                    "text": seg.get("text", "").strip(),
-                })
+            detected_language = language or "unknown"
+
+            for i, (start, end, speaker) in enumerate(turns):
+                _p(f"Transcribing segment {i + 1}/{len(turns)} ({speaker}, {start:.1f}s–{end:.1f}s)...")
+
+                chunk_path = slice_audio(audio, sr, start, end)
+                if chunk_path is None:
+                    continue
+
+                try:
+                    results = self.asr_model.transcribe(
+                        audio=chunk_path,
+                        language=language or None,
+                    )
+                    if not results or not results[0].text.strip():
+                        continue
+
+                    text = results[0].text.strip()
+                    if detected_language == "unknown" and hasattr(results[0], "language") and results[0].language:
+                        detected_language = results[0].language
+
+                    segments.append({
+                        "start":   round(start, 2),
+                        "end":     round(end,   2),
+                        "speaker": speaker,
+                        "text":    text,
+                    })
+
+                except Exception as e:
+                    logger.warning(f"Segment {i + 1} transcription failed: {e}")
+                finally:
+                    if chunk_path and os.path.exists(chunk_path):
+                        os.unlink(chunk_path)
 
             speakers = list(dict.fromkeys(s["speaker"] for s in segments))
             return {
-                "segments": segments,
-                "language": detected_language,
+                "segments":     segments,
+                "language":     detected_language,
                 "num_speakers": len(speakers),
             }
 
         finally:
-            if temp_audio and os.path.exists(temp_audio):
-                os.unlink(temp_audio)
+            if os.path.exists(full_audio_path):
+                os.unlink(full_audio_path)

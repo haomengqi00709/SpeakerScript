@@ -47,20 +47,22 @@ pip install -r requirements.txt
 
 ## Architecture
 
+### Models
+- **ASR**: `Qwen/Qwen3-ASR-0.6B` (~1.2GB) via the `qwen-asr` package. Outperforms Whisper large-v3 on most non-English benchmarks. To use the larger model: `ASR_MODEL=Qwen/Qwen3-ASR-1.7B ./start_local.sh`
+- **Diarization**: `pyannote/speaker-diarization-3.1` (~120MB) directly via `pyannote.audio`.
+
 ### Device handling
-- **Whisper / alignment** — uses `whisperx` which wraps `faster-whisper` (CTranslate2 backend). Supports `cuda` and `cpu` only — no MPS.
-- **Speaker diarization** — uses `whisperx.DiarizationPipeline` which wraps pyannote. Supports `cuda`, `mps`, and `cpu`.
-- `get_whisper_device()` returns `"cuda"` or `"cpu"`.
-- `get_torch_device()` returns `"cuda"`, `"mps"`, or `"cpu"`.
+- **ASR** (`get_asr_device()`): `"cuda:0"` or `"cpu"`. MPS not used — transformers MPS support for this model is unverified.
+- **Pyannote** (`get_diarize_device()`): `"cuda"`, `"mps"`, or `"cpu"`. On M3 Mac, pyannote runs on MPS automatically.
 
 ### Pipeline (`transcriber.py → Transcriber.transcribe()`)
-1. If input is a video file → extract 16kHz mono WAV with ffmpeg
-2. `whisperx.load_audio()` → numpy array
-3. `whisper_model.transcribe()` → segments with text, rough timestamps
-4. `whisperx.load_align_model()` + `whisperx.align()` → word-level timestamps (alignment model is per-language, auto-downloaded from HF; may not exist for all languages — gracefully skipped)
-5. `diarize_model(audio_path)` → pyannote annotation of who spoke when
-6. `whisperx.assign_word_speakers()` → each segment gets a `speaker` field (`SPEAKER_00`, `SPEAKER_01`, ...)
-7. Returns `{"segments": [...], "language": str, "num_speakers": int}`
+1. `extract_audio()` — ffmpeg converts input to 16kHz mono WAV numpy array
+2. Pyannote diarization on full audio → list of `(start, end, speaker)` turns
+3. For each speaker turn: `slice_audio()` extracts chunk → `Qwen3ASRModel.transcribe()` returns text
+4. Segments shorter than `MIN_SEGMENT_DUR` (0.3s) are skipped
+5. Returns `{"segments": [...], "language": str, "num_speakers": int}`
+
+Note: Language is auto-detected from the first segment that returns a language tag. Speaker labels come directly from pyannote (`SPEAKER_00`, `SPEAKER_01`, …) and are displayed as `Speaker 1`, `Speaker 2`, … in the UI.
 
 ### API server (`api_server.py`)
 Non-blocking job system:
@@ -81,7 +83,5 @@ Speaker labels from pyannote (`SPEAKER_00`, `SPEAKER_01`, …) are displayed as 
 | Env var | Default | Description |
 |---|---|---|
 | `HF_TOKEN` | — | Hugging Face token (required) |
-| `WHISPER_MODEL` | `large-v3` | Any whisperx-compatible model size |
+| `ASR_MODEL` | `Qwen/Qwen3-ASR-0.6B` | Any Qwen3-ASR model ID (`Qwen/Qwen3-ASR-1.7B` for best quality) |
 | `PORT` | `5002` | Server port |
-
-`batch_size` inside `transcribe()` is automatically set to 16 (CUDA) or 4 (CPU) based on device.

@@ -15,11 +15,11 @@ if [ -z "$HF_TOKEN" ]; then
 fi
 
 PORT=${PORT:-5002}
-WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+ASR_MODEL=${ASR_MODEL:-Qwen/Qwen3-ASR-0.6B}
 
 echo "▶  Starting SpeakerScript on http://localhost:$PORT"
-echo "   Model : $WHISPER_MODEL"
-echo "   Device: CPU (whisper) + MPS (diarization)"
+echo "   ASR Model : $ASR_MODEL"
+echo "   Device    : CPU (ASR) + MPS (diarization)"
 echo ""
 
-WHISPER_MODEL=$WHISPER_MODEL PORT=$PORT python api_server.py
+ASR_MODEL=$ASR_MODEL PORT=$PORT python3 api_server.py
