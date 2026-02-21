@@ -31,9 +31,12 @@ MIN_SEGMENT_DUR = 0.3   # skip turns shorter than this (seconds)
 
 
 def get_asr_device() -> str:
-    """Qwen3-ASR: CUDA if available, otherwise CPU.
-    MPS is not used here — transformers MPS support for this model is unverified."""
-    return "cuda:0" if torch.cuda.is_available() else "cpu"
+    """Qwen3-ASR: CUDA → MPS → CPU."""
+    if torch.cuda.is_available():
+        return "cuda:0"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def get_diarize_device() -> str:
@@ -69,6 +72,48 @@ def slice_audio(audio: np.ndarray, sr: int, start: float, end: float) -> str | N
     return path
 
 
+def _extract_turns(diarization, min_dur: float) -> list:
+    """Extract (start, end, speaker) tuples from pyannote output.
+    Handles Annotation (pyannote 3.x) and DiarizeOutput (pyannote 4.x)."""
+
+    # pyannote 3.x — Annotation object with itertracks()
+    if hasattr(diarization, "itertracks"):
+        return [
+            (seg.start, seg.end, spk)
+            for seg, _, spk in diarization.itertracks(yield_label=True)
+            if (seg.end - seg.start) >= min_dur
+        ]
+
+    # pyannote 4.x DiarizeOutput — annotation lives in .speaker_diarization
+    for attr in ("speaker_diarization", "exclusive_speaker_diarization", "annotation", "diarization"):
+        wrapped = getattr(diarization, attr, None)
+        if wrapped is not None and hasattr(wrapped, "itertracks"):
+            return [
+                (seg.start, seg.end, spk)
+                for seg, _, spk in wrapped.itertracks(yield_label=True)
+                if (seg.end - seg.start) >= min_dur
+            ]
+
+    # pyannoteai-sdk DiarizeOutput — try direct iteration over turn objects
+    turns = []
+    try:
+        for turn in diarization:
+            start   = getattr(turn, "start",   None)
+            end     = getattr(turn, "end",     None)
+            speaker = getattr(turn, "speaker", getattr(turn, "label", "UNKNOWN"))
+            if start is not None and end is not None and (end - start) >= min_dur:
+                turns.append((start, end, speaker))
+        if turns:
+            return turns
+    except TypeError:
+        pass
+
+    raise RuntimeError(
+        f"Unsupported diarization output type: {type(diarization).__name__}\n"
+        f"Attributes: {[a for a in dir(diarization) if not a.startswith('_')]}"
+    )
+
+
 class Transcriber:
     def __init__(self, asr_model: str = ASR_MODEL_ID, hf_token: str | None = None):
         self.asr_model_id  = asr_model
@@ -89,7 +134,7 @@ class Transcriber:
                 progress_callback(msg)
 
         _p(f"Loading {self.asr_model_id} on {self.asr_device}...")
-        dtype = torch.bfloat16 if self.asr_device != "cpu" else torch.float32
+        dtype = torch.float32 if self.asr_device == "cpu" else torch.bfloat16
         self.asr_model = Qwen3ASRModel.from_pretrained(
             self.asr_model_id,
             dtype=dtype,
@@ -107,7 +152,7 @@ class Transcriber:
         _p(f"Loading pyannote diarization pipeline on {self.diarize_device}...")
         self.diarize_pipeline = Pipeline.from_pretrained(
             DIARIZE_MODEL,
-            use_auth_token=self.hf_token,
+            token=self.hf_token,
         )
         self.diarize_pipeline = self.diarize_pipeline.to(torch.device(self.diarize_device))
 
@@ -142,27 +187,22 @@ class Transcriber:
         _p("Extracting audio...")
         audio, sr = extract_audio(file_path)
 
-        # Save full audio to disk — pyannote needs a file path
-        full_audio_path = tempfile.mktemp(suffix=".wav")
-        sf.write(full_audio_path, audio, sr)
-
         try:
-            # 2. Diarize
+            # 2. Diarize — pass in-memory tensor to avoid torchcodec dependency
             _p("Identifying speakers...")
+            waveform = torch.from_numpy(audio).unsqueeze(0)  # (1, T)
+            audio_input = {"waveform": waveform, "sample_rate": sr}
+
             diarize_kwargs = {}
             if min_speakers is not None:
                 diarize_kwargs["min_speakers"] = min_speakers
             if max_speakers is not None:
                 diarize_kwargs["max_speakers"] = max_speakers
 
-            diarization = self.diarize_pipeline(full_audio_path, **diarize_kwargs)
+            diarization = self.diarize_pipeline(audio_input, **diarize_kwargs)
 
-            # 3. Collect speaker turns
-            turns = [
-                (seg.start, seg.end, spk)
-                for seg, _, spk in diarization.itertracks(yield_label=True)
-                if (seg.end - seg.start) >= MIN_SEGMENT_DUR
-            ]
+            # 3. Collect speaker turns — handle pyannote 3.x and 4.x output formats
+            turns = _extract_turns(diarization, MIN_SEGMENT_DUR)
 
             if not turns:
                 return {"segments": [], "language": "unknown", "num_speakers": 0}
@@ -211,5 +251,4 @@ class Transcriber:
             }
 
         finally:
-            if os.path.exists(full_audio_path):
-                os.unlink(full_audio_path)
+            pass  # no temp files to clean up — pyannote receives in-memory audio

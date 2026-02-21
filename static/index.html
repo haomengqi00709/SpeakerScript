@@ -125,6 +125,19 @@
     .stage-icon   { font-size: 1.2em; display: block; margin-bottom: 3px; }
     .progress-msg { text-align: center; color: #6b7280; font-size: 0.88em; margin-top: 10px; }
 
+    /* Chat bubbles */
+    .chat-q {
+      align-self: flex-end; background: #3b82f6; color: #fff;
+      padding: 10px 16px; border-radius: 18px 18px 4px 18px;
+      max-width: 80%; font-size: 0.92em; line-height: 1.5;
+    }
+    .chat-a {
+      align-self: flex-start; background: #f3f4f6; color: #1f2937;
+      padding: 10px 16px; border-radius: 18px 18px 18px 4px;
+      max-width: 90%; font-size: 0.92em; line-height: 1.6;
+    }
+    .chat-a.loading { color: #9ca3af; font-style: italic; }
+
     /* Results */
     #results-section { display: none; }
     .results-header {
@@ -294,6 +307,34 @@
     </div>
   </div>
 
+  <!-- Q&A section -->
+  <div id="qa-section" style="display:none; margin-top:32px;">
+    <hr style="border:none;border-top:1px solid #e5e7eb;margin-bottom:24px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <h2 style="color:#1a1a2e;font-size:1.2em;margin:0;">💬 Ask about this video</h2>
+      <button onclick="clearChat()" id="clear-chat-btn" style="display:none;background:none;border:none;color:#9ca3af;font-size:0.85em;cursor:pointer;padding:4px 8px;border-radius:6px;" onmouseover="this.style.color='#6b7280'" onmouseout="this.style.color='#9ca3af'">Clear</button>
+    </div>
+    <p style="color:#6b7280;font-size:0.88em;margin-bottom:16px;">Answers are based on the transcript above.</p>
+
+    <!-- Chat history -->
+    <div id="chat-history" style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px;"></div>
+
+    <!-- Input row -->
+    <div style="display:flex;gap:10px;">
+      <input
+        type="text" id="qa-input"
+        placeholder="e.g. What did Speaker 1 say about the project?"
+        style="flex:1;border:1px solid #d1d5db;border-radius:10px;padding:11px 16px;font-size:0.95em;outline:none;"
+        onkeydown="if(event.key==='Enter') askQuestion()"
+      />
+      <button
+        onclick="askQuestion()"
+        id="qa-btn"
+        style="padding:11px 22px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:10px;font-size:0.95em;font-weight:600;cursor:pointer;white-space:nowrap;"
+      >Ask</button>
+    </div>
+  </div>
+
 </div><!-- /container -->
 
 <script>
@@ -337,7 +378,7 @@ function updateStatusBar(data) {
 
   if (data.status === 'loaded') {
     dot.className = 'dot green';
-    text.textContent = `Ready — ${data.model}`;
+    text.textContent = 'Ready';
     btn.disabled = !selectedFile;
   } else if (data.status === 'loading') {
     dot.className = 'dot yellow';
@@ -389,6 +430,8 @@ async function startTranscription() {
 
   // Reset UI
   document.getElementById('results-section').style.display = 'none';
+  document.getElementById('qa-section').style.display = 'none';
+  document.getElementById('chat-history').innerHTML = '';
   document.getElementById('progress-section').style.display = 'block';
   document.getElementById('transcribe-btn').disabled = true;
   resetStages();
@@ -536,6 +579,7 @@ function showResults(result) {
   document.getElementById('plain-box').textContent = plainLines.join('\n');
 
   document.getElementById('results-section').style.display = 'block';
+  document.getElementById('qa-section').style.display = 'block';
   document.getElementById('transcribe-btn').disabled = false;
 }
 
@@ -611,6 +655,64 @@ function formatSpeakerName(raw) {
 
 function escHtml(str) {
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── Q&A ──────────────────────────────────────────────────────────────────────
+function buildTranscriptText(segments) {
+  return segments.map(s =>
+    `[${formatSpeakerName(s.speaker)}] ${formatTime(s.start)}: ${s.text}`
+  ).join('\n');
+}
+
+function clearChat() {
+  document.getElementById('chat-history').innerHTML = '';
+  document.getElementById('clear-chat-btn').style.display = 'none';
+}
+
+async function askQuestion() {
+  const input = document.getElementById('qa-input');
+  const question = input.value.trim();
+  if (!question || !lastResult) return;
+
+  input.value = '';
+  document.getElementById('qa-btn').disabled = true;
+
+  const history = document.getElementById('chat-history');
+  document.getElementById('clear-chat-btn').style.display = 'inline';
+
+  // User bubble
+  const qBubble = document.createElement('div');
+  qBubble.className = 'chat-q';
+  qBubble.textContent = question;
+  history.appendChild(qBubble);
+
+  // Answer bubble (loading state)
+  const aBubble = document.createElement('div');
+  aBubble.className = 'chat-a loading';
+  aBubble.textContent = 'Thinking...';
+  history.appendChild(aBubble);
+  history.scrollTop = history.scrollHeight;
+
+  try {
+    const res = await fetch(`${API}/api/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        transcript: buildTranscriptText(lastResult.segments),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Request failed');
+    aBubble.className = 'chat-a';
+    aBubble.textContent = data.answer;
+  } catch (e) {
+    aBubble.className = 'chat-a';
+    aBubble.textContent = `❌ ${e.message}`;
+  } finally {
+    document.getElementById('qa-btn').disabled = false;
+    history.scrollTop = history.scrollHeight;
+  }
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────

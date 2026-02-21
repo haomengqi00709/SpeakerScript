@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SpeakerScript transcribes video/audio files and identifies who is speaking. Built with WhisperX (faster-whisper backend) + pyannote.audio for speaker diarization.
+SpeakerScript transcribes video/audio files and identifies who is speaking. Built with Qwen3-ASR + pyannote.audio for speaker diarization, served via FastAPI.
 
 **Required environment variable:**
 ```bash
@@ -29,7 +29,7 @@ chmod +x runpod_setup.sh && ./runpod_setup.sh
 
 **Manual:**
 ```bash
-WHISPER_MODEL=large-v3 PORT=5002 python api_server.py
+ASR_MODEL=Qwen/Qwen3-ASR-0.6B PORT=5002 python api_server.py
 ```
 
 **System dependency:** `ffmpeg` must be installed (`brew install ffmpeg` on Mac).
@@ -45,6 +45,8 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements.txt
 ```
 
+**Local env file:** Credentials can be placed in a `.env` file (gitignored); `api_server.py` loads it automatically via `python-dotenv`.
+
 ## Architecture
 
 ### Models
@@ -52,17 +54,19 @@ pip install -r requirements.txt
 - **Diarization**: `pyannote/speaker-diarization-3.1` (~120MB) directly via `pyannote.audio`.
 
 ### Device handling
-- **ASR** (`get_asr_device()`): `"cuda:0"` or `"cpu"`. MPS not used — transformers MPS support for this model is unverified.
-- **Pyannote** (`get_diarize_device()`): `"cuda"`, `"mps"`, or `"cpu"`. On M3 Mac, pyannote runs on MPS automatically.
+- **ASR** (`get_asr_device()`): `"cuda:0"` → `"mps"` → `"cpu"`. On M3 Mac, ASR runs on MPS.
+- **Pyannote** (`get_diarize_device()`): `"cuda"` → `"mps"` → `"cpu"`. On M3 Mac, pyannote also runs on MPS.
 
 ### Pipeline (`transcriber.py → Transcriber.transcribe()`)
 1. `extract_audio()` — ffmpeg converts input to 16kHz mono WAV numpy array
-2. Pyannote diarization on full audio → list of `(start, end, speaker)` turns
+2. Pyannote diarization on full audio (passed as in-memory tensor) → list of `(start, end, speaker)` turns via `_extract_turns()`
 3. For each speaker turn: `slice_audio()` extracts chunk → `Qwen3ASRModel.transcribe()` returns text
 4. Segments shorter than `MIN_SEGMENT_DUR` (0.3s) are skipped
 5. Returns `{"segments": [...], "language": str, "num_speakers": int}`
 
-Note: Language is auto-detected from the first segment that returns a language tag. Speaker labels come directly from pyannote (`SPEAKER_00`, `SPEAKER_01`, …) and are displayed as `Speaker 1`, `Speaker 2`, … in the UI.
+`_extract_turns()` handles both pyannote 3.x (`Annotation` with `itertracks()`) and 4.x (`DiarizeOutput`) output formats.
+
+Language is auto-detected from the first segment that returns a language tag. Speaker labels come directly from pyannote (`SPEAKER_00`, `SPEAKER_01`, …) and are displayed as `Speaker 1`, `Speaker 2`, … in the UI.
 
 ### API server (`api_server.py`)
 Non-blocking job system:
@@ -70,11 +74,12 @@ Non-blocking job system:
 - `GET /api/job/{job_id}` → poll for `{status, progress, result, error}`
 - `POST /api/load` → starts model loading thread (also triggered automatically on startup)
 - `GET /api/status` → `{status: not_loaded|loading|loaded|error, progress, model}`
+- `POST /api/ask` → Q&A on a transcript via Gemini (requires `GOOGLE_API_KEY`)
 
 Jobs are stored in an in-memory dict (`jobs`). Temp files are cleaned up by the job thread after transcription.
 
 ### Frontend (`static/index.html`)
-Self-contained single HTML file. Polls `/api/status` on load to trigger model loading. After upload, polls `/api/job/{id}` every 1.5s and maps progress strings to visual stage indicators. Exports as `.txt` or `.srt`.
+Self-contained single HTML file. Polls `/api/status` on load to trigger model loading. After upload, polls `/api/job/{id}` every 1.5s and maps progress strings to visual stage indicators. Exports as `.txt` or `.srt`. Includes a Q&A panel that calls `/api/ask`.
 
 Speaker labels from pyannote (`SPEAKER_00`, `SPEAKER_01`, …) are displayed as `Speaker 1`, `Speaker 2`, … with distinct colors.
 
@@ -84,4 +89,6 @@ Speaker labels from pyannote (`SPEAKER_00`, `SPEAKER_01`, …) are displayed as 
 |---|---|---|
 | `HF_TOKEN` | — | Hugging Face token (required) |
 | `ASR_MODEL` | `Qwen/Qwen3-ASR-0.6B` | Any Qwen3-ASR model ID (`Qwen/Qwen3-ASR-1.7B` for best quality) |
+| `GOOGLE_API_KEY` | — | Google API key for Gemini Q&A feature (optional) |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model used for `/api/ask` |
 | `PORT` | `5002` | Server port |
