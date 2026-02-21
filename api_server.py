@@ -52,7 +52,7 @@ R2_ACCESS_KEY_ID     = os.getenv("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
 R2_BUCKET_NAME       = os.getenv("R2_BUCKET_NAME")
 
-RUNPOD_BASE    = f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}"
+RUNPOD_BASE    = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}"
 RUNPOD_HEADERS = {"Authorization": f"Bearer {RUNPOD_API_KEY}"}
 
 # --------------------------------------------------------------------------- #
