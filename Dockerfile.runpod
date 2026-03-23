@@ -25,13 +25,10 @@ RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pyt
 # numpy must be installed before sox Python package builds
 RUN pip install --no-cache-dir numpy>=1.24.0
 
-# sox Python package uses legacy setup.py that imports numpy at build time;
-# --no-build-isolation makes the already-installed numpy visible during its build
-RUN pip install --no-cache-dir --no-build-isolation sox
-
 # ML + RunPod deps
+# --no-build-isolation needed so sox (qwen-asr dep) can see pre-installed numpy
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --no-build-isolation -r requirements.txt
 RUN pip install --no-cache-dir runpod requests
 
 # App code
