@@ -17,16 +17,21 @@ RUN apt-get update && apt-get install -y \
 
 RUN ln -sf /usr/bin/python3 /usr/bin/python && ln -sf /usr/bin/pip3 /usr/bin/pip
 
+# Ensure sox binary is on a PATH that pip subprocesses reliably see
+RUN ln -sf /usr/bin/sox /usr/local/bin/sox
+
 WORKDIR /app
 
 # PyTorch with CUDA 12.1 (must come before other deps)
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# numpy must be installed before sox Python package builds
+# Install numpy then sox Python package before the rest.
+# sox's legacy setup.py needs (a) numpy importable and (b) the sox binary in PATH.
+# --no-build-isolation makes the already-installed numpy visible to setup.py.
 RUN pip install --no-cache-dir numpy>=1.24.0
+RUN pip install --no-cache-dir --no-build-isolation sox
 
-# ML + RunPod deps
-# --no-build-isolation needed so sox (qwen-asr dep) can see pre-installed numpy
+# ML + RunPod deps (sox already satisfied, qwen-asr won't try to rebuild it)
 COPY requirements.txt .
 RUN pip install --no-cache-dir --no-build-isolation -r requirements.txt
 RUN pip install --no-cache-dir runpod requests
