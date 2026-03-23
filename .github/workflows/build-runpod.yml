@@ -13,17 +13,20 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    environment: Docker
+    permissions:
+      contents: read
+      packages: write  # needed to push to ghcr.io
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -31,6 +34,4 @@ jobs:
           context: .
           file: Dockerfile.runpod
           push: true
-          tags: |
-            nejoasfa/speakerscript-worker:latest
-            nejoasfa/speakerscript-worker:v2
+          tags: ghcr.io/haomengqi00709/speakerscript-worker:latest
